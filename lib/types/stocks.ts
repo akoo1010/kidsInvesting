@@ -7,6 +7,8 @@ export type Quote = {
   changePercent: number;
   previousClose: number;
   marketState?: string;
+  // Yahoo's instrument type: "EQUITY", "ETF", "CRYPTOCURRENCY", "INDEX", …
+  quoteType?: string;
   exchange?: string;
   marketCap?: number;
   trailingPE?: number;

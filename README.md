@@ -10,7 +10,11 @@ localStorage, and can optionally sync across devices via a small backend.
   — quotes, search, historical charts, and `assetProfile` (sector/industry).
 - **Multiple Cubs** — siblings can each have their own profile and portfolio.
 - **Paper trading** — every new Cub starts with **$10,000**. Trades show a
-  confirmation step with totals before going through.
+  confirmation step with totals, then re-check the live price right before
+  filling: small moves (≤ 1%) fill at the fresh price, bigger ones ask the
+  kid to confirm the new total. Only US-dollar stocks and ETFs can be
+  bought; crypto, indexes, and stocks priced in other currencies are
+  watch-only (shares already owned can still be sold).
 - **Parent password** (device-local) — gates all Cub management (create /
   switch / rename / delete / reset). Hashed with SHA-256 + random salt in
   localStorage. Auto-locks after 5 minutes; 5 wrong attempts triggers a
@@ -67,13 +71,25 @@ localStorage, and can optionally sync across devices via a small backend.
 
 ## Getting started
 
-Requires Node 20+ (Node 25 was used for development). No external services
+Requires Node 20.19+ (Node 25 was used for development). No external services
 required for local dev — sync uses a JSON file under `./data`.
 
 ```bash
 npm install
 npm run dev          # http://localhost:3000
 ```
+
+Checks (CI runs all four on every pull request):
+
+```bash
+npm run typecheck    # tsc
+npm run lint         # ESLint (eslint-config-next)
+npm test             # Vitest — `npm run test:watch` while developing
+npm run build
+```
+
+Trading rules live in `lib/trading.ts` and portfolio valuation in
+`lib/valuation.ts` — both pure functions with unit tests next to them.
 
 For production:
 

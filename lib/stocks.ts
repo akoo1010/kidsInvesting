@@ -25,6 +25,7 @@ export async function getQuote(symbol: string): Promise<Quote> {
     changePercent,
     previousClose,
     marketState: q.marketState,
+    quoteType: q.quoteType,
     exchange: q.fullExchangeName,
     marketCap: q.marketCap,
     trailingPE: q.trailingPE,

@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { usePortfolio } from "@/lib/portfolio";
 import { STARTING_CASH_AMOUNT } from "@/lib/constants";
 import { formatChange, formatMoney, formatPercent, gainColor } from "@/lib/format";
 import { MoodBadge } from "@/components/MoodBadge";
 import { moodForHoldings, type Mood } from "@/lib/mood";
 import { useQuotes } from "@/lib/useQuotes";
+import { valuePortfolio } from "@/lib/valuation";
 
 type Row = {
   id: string;
@@ -51,14 +52,9 @@ export function Leaderboard() {
           isCurrent: p.id === currentProfile?.id,
         };
       }
-      // While quotes are still loading we fall back to each lot's cost
-      // basis so the ranking shows ~0% rather than wildly-wrong losses.
-      let invested = 0;
-      for (const [sym, lot] of Object.entries(port.holdings)) {
-        const q = quotes[sym];
-        invested += q ? q.price * lot.shares : lot.costBasis;
-      }
-      const totalValue = port.cash + invested;
+      // Holdings without a live price (still loading, or failed) count at
+      // cost basis, so the ranking shows ~0% rather than wildly-wrong losses.
+      const { totalValue } = valuePortfolio(port, quotes);
       const gain = totalValue - STARTING_CASH_AMOUNT;
       const gainPct = (gain / STARTING_CASH_AMOUNT) * 100;
       return {

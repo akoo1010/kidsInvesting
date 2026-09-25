@@ -64,11 +64,7 @@ export default async function StockPage({
         <div className="lg:col-span-2">
           <PriceChart symbol={quote.symbol} currency={quote.currency} />
         </div>
-        <TradePanel
-          symbol={quote.symbol}
-          price={quote.price}
-          currency={quote.currency}
-        />
+        <TradePanel key={quote.symbol} quote={quote} />
       </div>
 
       <Fundamentals quote={quote} />
