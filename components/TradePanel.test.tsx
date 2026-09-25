@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TradePanel } from "@/components/TradePanel";
-import { STORAGE_KEYS } from "@/lib/constants";
+import { STORAGE_KEYS, TRADING } from "@/lib/constants";
 import { PortfolioProvider } from "@/lib/portfolio";
 import type { PortfolioState, Quote } from "@/lib/types";
 
@@ -37,6 +38,12 @@ function savedCub(): PortfolioState {
   return JSON.parse(localStorage.getItem(STORAGE_KEYS.profiles) ?? "null").portfolios.cub;
 }
 
+// The provider saves to localStorage in an effect, which can land just after
+// the success message renders.
+function expectSaved(check: (cub: PortfolioState) => void) {
+  return waitFor(() => check(savedCub()));
+}
+
 // Each call to /api/quote gets the next response in line.
 function mockFreshQuotes(...responses: Array<Quote | Error>) {
   const fetchMock = vi.fn();
@@ -48,8 +55,37 @@ function mockFreshQuotes(...responses: Array<Quote | Error>) {
   return fetchMock;
 }
 
+// A price check that stays in flight until the test resolves it, and that
+// rejects like a real fetch when its signal aborts.
+function controllableFetch() {
+  let resolve: (q: Quote) => void = () => {};
+  const fetchMock = vi.fn(
+    (_url: string, init?: RequestInit) =>
+      new Promise((res, rej) => {
+        resolve = (q) => res({ ok: true, status: 200, json: async () => q });
+        init?.signal?.addEventListener("abort", () =>
+          rej(new DOMException("The operation was aborted.", "AbortError")),
+        );
+      }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return { fetchMock, resolve: (q: Quote) => resolve(q) };
+}
+
+// Keeps the provider mounted while the panel goes away, so a trade that
+// wrongly fills after leaving would still reach localStorage.
+function LeavablePanel({ q }: { q: Quote }) {
+  const [here, setHere] = useState(true);
+  return (
+    <PortfolioProvider>
+      {here && <TradePanel quote={q} />}
+      <button onClick={() => setHere(false)}>Leave page</button>
+    </PortfolioProvider>
+  );
+}
+
 function renderPanel(q: Quote) {
-  render(
+  return render(
     <PortfolioProvider>
       <TradePanel quote={q} />
     </PortfolioProvider>,
@@ -69,6 +105,7 @@ beforeEach(() => localStorage.clear());
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("TradePanel: re-pricing at confirm time", () => {
@@ -84,9 +121,14 @@ describe("TradePanel: re-pricing at confirm time", () => {
     expect(
       await screen.findByText("Bought 10 shares of AAPL at $100.50 each!"),
     ).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledWith("/api/quote?symbol=AAPL", { cache: "no-store" });
-    expect(savedCub().cash).toBeCloseTo(10_000 - 1_005, 6);
-    expect(savedCub().holdings.AAPL.shares).toBe(10);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/quote?symbol=AAPL",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+    await expectSaved((cub) => {
+      expect(cub.cash).toBeCloseTo(10_000 - 1_005, 6);
+      expect(cub.holdings.AAPL.shares).toBe(10);
+    });
   });
 
   it("asks again at the new price when the price jumped since the page loaded", async () => {
@@ -106,7 +148,7 @@ describe("TradePanel: re-pricing at confirm time", () => {
 
     click("Yes, buy now");
     expect(await screen.findByText("Bought 5 shares of AAPL at $120.00 each!")).toBeTruthy();
-    expect(savedCub().cash).toBe(9_400);
+    await expectSaved((cub) => expect(cub.cash).toBe(9_400));
   });
 
   it("does not trade when the fresh price can't be fetched", async () => {
@@ -153,6 +195,99 @@ describe("TradePanel: re-pricing at confirm time", () => {
   });
 });
 
+describe("TradePanel: while the price is being checked", () => {
+  it("keeps focus on the confirm button and ignores extra clicks", async () => {
+    seedCub();
+    const { fetchMock, resolve } = controllableFetch();
+    renderPanel(quote());
+
+    click("Buy");
+    const confirm = screen.getByRole("button", { name: "Yes, buy now" });
+    confirm.focus();
+    fireEvent.click(confirm);
+
+    const checking = screen.getByRole("button", { name: "Checking price…" });
+    expect(checking.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(checking);
+    fireEvent.click(checking);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => resolve(quote()));
+    expect(await screen.findByText("Bought 1 share of AAPL at $100.00 each!")).toBeTruthy();
+    await expectSaved((cub) => expect(cub.holdings.AAPL.shares).toBe(1));
+  });
+
+  it("can be cancelled, and never trades afterwards", async () => {
+    seedCub();
+    const { fetchMock, resolve } = controllableFetch();
+    renderPanel(quote());
+
+    click("Buy");
+    click("Yes, buy now");
+    click("Cancel");
+    // Even if the price arrives anyway, nothing may fill.
+    await act(async () => resolve(quote()));
+
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
+    expect(screen.getByText("0 shares")).toBeTruthy();
+    expect(savedCub().holdings).toEqual({});
+  });
+
+  it("never trades after the kid leaves the page", async () => {
+    seedCub();
+    const { fetchMock, resolve } = controllableFetch();
+    render(<LeavablePanel q={quote()} />);
+
+    click("Buy");
+    click("Yes, buy now");
+    click("Leave page");
+    await act(async () => resolve(quote()));
+
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    expect(savedCub().holdings).toEqual({});
+    expect(savedCub().cash).toBe(10_000);
+  });
+
+  it("gives up after the timeout without trading", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    seedCub();
+    controllableFetch();
+    renderPanel(quote());
+
+    click("Buy");
+    click("Yes, buy now");
+    await act(async () => {
+      vi.advanceTimersByTime(TRADING.priceCheckTimeoutMs);
+    });
+
+    expect(screen.getByText(/Couldn't check the latest price/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Yes, buy now" })).toBeTruthy();
+    expect(savedCub().holdings).toEqual({});
+  });
+
+  it("won't confirm a buy the new price makes unaffordable", async () => {
+    seedCub({ cash: 1_000 });
+    const fetchMock = mockFreshQuotes(quote({ price: 110 }));
+    renderPanel(quote({ price: 100 }));
+
+    setShares(10);
+    click("Buy");
+    click("Yes, buy now");
+
+    expect(
+      await screen.findByText(/would cost more than your \$1,000\.00 cash/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/cash left/)).toBeNull();
+    const confirm = screen.getByRole("button", { name: "Yes, buy now" });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(confirm);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(savedCub().cash).toBe(1_000);
+  });
+});
+
 describe("TradePanel: what can be traded", () => {
   it("makes a stock priced in yen watch-only", () => {
     seedCub();
@@ -162,6 +297,14 @@ describe("TradePanel: what can be traded", () => {
     expect(screen.queryByRole("button", { name: "Buy" })).toBeNull();
     expect(screen.queryByLabelText("How many shares?")).toBeNull();
     expect(screen.getByRole("button", { name: /watchlist/ })).toBeTruthy();
+  });
+
+  it("makes a stock with an unknown currency watch-only", () => {
+    seedCub();
+    renderPanel(quote({ currency: undefined }));
+
+    expect(screen.getByRole("note").textContent).toMatch(/can't tell what currency/);
+    expect(screen.queryByRole("button", { name: "Buy" })).toBeNull();
   });
 
   it("makes crypto watch-only", () => {
@@ -189,13 +332,15 @@ describe("TradePanel: what can be traded", () => {
     mockFreshQuotes(quote({ symbol: "7203.T", price: 3_000, currency: "JPY" }));
     renderPanel(quote({ symbol: "7203.T", price: 3_000, currency: "JPY" }));
 
-    expect(screen.getByRole("note").textContent).toMatch(/You can still sell/);
+    expect(screen.getByRole("note").textContent).toMatch(/You can still sell.*counted in dollars/);
     expect(screen.queryByRole("button", { name: "Buy" })).toBeNull();
 
     click("Sell");
     click("Yes, sell now");
 
-    expect(await screen.findByText(/Sold 1 share of 7203\.T/)).toBeTruthy();
-    expect(savedCub().holdings["7203.T"].shares).toBe(1);
+    expect(
+      await screen.findByText("Sold 1 share of 7203.T at $3,000.00 each."),
+    ).toBeTruthy();
+    await expectSaved((cub) => expect(cub.holdings["7203.T"].shares).toBe(1));
   });
 });

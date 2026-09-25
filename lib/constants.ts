@@ -18,6 +18,8 @@ export const TRADING = {
   // this since the kid saw the confirmation, they confirm again at the new
   // price instead of it filling silently.
   reconfirmMovePct: 1,
+  // Give up on that price check (and don't trade) after this long.
+  priceCheckTimeoutMs: 10_000,
   maxTradesKept: 100,
 } as const;
 

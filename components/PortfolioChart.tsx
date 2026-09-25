@@ -28,7 +28,9 @@ export function PortfolioChart({
   currentValue,
 }: {
   history: ValueSnapshot[];
-  currentValue: number;
+  // Today's live value, or null while prices are incomplete (then only the
+  // saved history is drawn).
+  currentValue: number | null;
 }) {
   const [spxByDate, setSpxByDate] = useState<Record<string, number>>({});
   const [spxLoading, setSpxLoading] = useState(false);
@@ -37,6 +39,7 @@ export function PortfolioChart({
 
   const mergedHistory = useMemo(() => {
     const merged = [...history];
+    if (currentValue === null) return merged;
     const last = merged[merged.length - 1];
     if (!last || last.date !== today) {
       merged.push({ date: today, value: currentValue });

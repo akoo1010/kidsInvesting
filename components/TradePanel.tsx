@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePortfolio } from "@/lib/portfolio";
+import { TRADING } from "@/lib/constants";
 import { formatMoney } from "@/lib/format";
 import { fetchQuote } from "@/lib/fetchQuote";
 import {
@@ -22,6 +23,10 @@ type Pending = {
   movedFrom?: number;
 };
 
+// Why a price check was stopped early. Cancel and unmount end quietly with
+// no trade; a timeout ends with a message and no trade.
+type StopReason = "cancel" | "unmount" | "timeout";
+
 export function TradePanel({ quote }: { quote: Quote }) {
   const { state, ready, buy, sell, addToWatchlist, removeFromWatchlist } =
     usePortfolio();
@@ -32,14 +37,20 @@ export function TradePanel({ quote }: { quote: Quote }) {
   const [note, setNote] = useState<string>("");
   const [pending, setPending] = useState<Pending | null>(null);
   const [checking, setChecking] = useState(false);
-  const inFlight = useRef(false);
+  const checkRef = useRef<AbortController | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(
     null,
   );
 
+  // Abandon an in-flight price check when the panel goes away, so a trade
+  // never fills after the kid has left the page.
+  useEffect(() => () => checkRef.current?.abort("unmount" satisfies StopReason), []);
+
+  // Amounts are shown in dollars, the currency cash is kept in. Only dollar
+  // stocks can be bought; a non-dollar stock owned from before that rule is
+  // still counted in dollars, the same as when it was bought.
   const symbol = quote.symbol;
   const price = live.price;
-  const currency = live.currency;
   const sharesNum = Number(shares) || 0;
   const total = sharesNum * price;
   const holding = state.holdings[symbol];
@@ -48,32 +59,57 @@ export function TradePanel({ quote }: { quote: Quote }) {
   const sellBlock = sellBlockReason(live);
   const canSellHolding = !!holding && !sellBlock;
   const showTradeForm = !buyBlock || canSellHolding;
+  const nonDollar = !!live.currency && live.currency !== TRADING.cashCurrency;
+
+  const pendingTotal = pending ? pending.shares * pending.price : 0;
+  // A re-check can raise the price past what the Cub can afford.
+  const cantAfford =
+    pending?.side === "buy" && pendingTotal > state.cash + 1e-6;
 
   function start(side: Pending["side"]) {
     setMsg(null);
     setPending({ side, shares: sharesNum, note, price });
   }
 
+  function cancelPending() {
+    checkRef.current?.abort("cancel" satisfies StopReason);
+    checkRef.current = null;
+    setChecking(false);
+    setPending(null);
+  }
+
   // Re-price right before filling, so a page left open for hours can't buy
   // at an old price. Small moves fill at the fresh price (like a real market
   // order); bigger ones go back to the kid to confirm the new total.
   async function confirmTrade() {
-    if (!pending || inFlight.current) return;
-    inFlight.current = true;
+    if (!pending || checkRef.current || cantAfford) return;
+    const controller = new AbortController();
+    checkRef.current = controller;
+    const timer = setTimeout(
+      () => controller.abort("timeout" satisfies StopReason),
+      TRADING.priceCheckTimeoutMs,
+    );
+    const stoppedByKid = () => {
+      const reason = controller.signal.reason as StopReason | undefined;
+      return reason === "cancel" || reason === "unmount";
+    };
     setChecking(true);
     setMsg(null);
     const order = pending;
     try {
       let fresh: Quote;
       try {
-        fresh = await fetchQuote(symbol);
+        fresh = await fetchQuote(symbol, controller.signal);
       } catch {
-        setMsg({
-          kind: "err",
-          text: "Couldn't check the latest price. Check your internet and try again.",
-        });
+        if (!stoppedByKid()) {
+          setMsg({
+            kind: "err",
+            text: "Couldn't check the latest price. Check your internet and try again.",
+          });
+        }
         return;
       }
+      if (stoppedByKid()) return;
       setLive(fresh);
 
       const blocked =
@@ -98,7 +134,7 @@ export function TradePanel({ quote }: { quote: Quote }) {
       setPending(null);
       if (res.ok) {
         const plural = order.shares === 1 ? "" : "s";
-        const each = formatMoney(fresh.price, fresh.currency);
+        const each = formatMoney(fresh.price);
         setMsg({
           kind: "ok",
           text:
@@ -111,12 +147,14 @@ export function TradePanel({ quote }: { quote: Quote }) {
         setMsg({ kind: "err", text: res.reason });
       }
     } finally {
-      inFlight.current = false;
-      setChecking(false);
+      clearTimeout(timer);
+      // A cancel may already have handed control to a newer check.
+      if (checkRef.current === controller) {
+        checkRef.current = null;
+        setChecking(false);
+      }
     }
   }
-
-  const pendingTotal = pending ? pending.shares * pending.price : 0;
 
   return (
     <div className="card p-5 flex flex-col gap-4" aria-busy={!ready}>
@@ -154,7 +192,10 @@ export function TradePanel({ quote }: { quote: Quote }) {
         >
           <span aria-hidden="true">👀 </span>
           {buyBlock}
-          {canSellHolding && " You can still sell the shares you own."}
+          {canSellHolding &&
+            (nonDollar
+              ? " You can still sell the shares you own — they're counted in dollars, the same as when you bought them."
+              : " You can still sell the shares you own.")}
         </div>
       )}
 
@@ -187,9 +228,8 @@ export function TradePanel({ quote }: { quote: Quote }) {
           </label>
 
           <div className="text-sm text-slate-700">
-            At {formatMoney(price, currency)} each, that{" "}
-            {buyBlock ? "is worth" : "costs"}{" "}
-            <strong>{formatMoney(total, currency)}</strong>.
+            At {formatMoney(price)} each, that {buyBlock ? "is worth" : "costs"}{" "}
+            <strong>{formatMoney(total)}</strong>.
           </div>
 
           {!pending && (
@@ -228,23 +268,26 @@ export function TradePanel({ quote }: { quote: Quote }) {
         >
           {pending.movedFrom !== undefined && (
             <div role="alert" className="text-sm font-semibold text-amber-900">
-              ⚠️ The price just changed from{" "}
-              {formatMoney(pending.movedFrom, currency)} to{" "}
-              {formatMoney(pending.price, currency)}. Here&apos;s the new total —
-              confirm again if you still want it.
+              ⚠️ The price just changed from {formatMoney(pending.movedFrom)} to{" "}
+              {formatMoney(pending.price)}.{" "}
+              {cantAfford
+                ? `Now ${pending.shares} share${pending.shares === 1 ? "" : "s"} would cost more than your ${formatMoney(state.cash)} cash. Cancel and pick fewer shares.`
+                : "Here's the new total — confirm again if you still want it."}
             </div>
           )}
           <div className="font-semibold text-amber-900">
             Confirm: {pending.side === "buy" ? "Buy" : "Sell"}{" "}
             <strong>{pending.shares}</strong> share
             {pending.shares === 1 ? "" : "s"} of <strong>{symbol}</strong> at{" "}
-            <strong>{formatMoney(pending.price, currency)}</strong> each.
+            <strong>{formatMoney(pending.price)}</strong> each.
           </div>
           <div className="text-sm text-amber-900">
-            Total <strong>{formatMoney(pendingTotal, currency)}</strong>
-            {pending.side === "buy"
-              ? `. You'll have ${formatMoney(state.cash - pendingTotal)} cash left.`
-              : `. You'll have ${formatMoney(state.cash + pendingTotal)} cash after.`}
+            Total <strong>{formatMoney(pendingTotal)}</strong>
+            {pending.side === "sell"
+              ? `. You'll have ${formatMoney(state.cash + pendingTotal)} cash after.`
+              : cantAfford
+                ? "."
+                : `. You'll have ${formatMoney(state.cash - pendingTotal)} cash left.`}
           </div>
           {pending.note && (
             <div className="text-sm text-amber-900 italic">
@@ -252,39 +295,40 @@ export function TradePanel({ quote }: { quote: Quote }) {
             </div>
           )}
           <div className="grid grid-cols-2 gap-2">
+            {/* aria-disabled rather than disabled, so keyboard focus stays on
+                the button while the price is checked. */}
             <button
               className={`btn ${pending.side === "buy" ? "btn-success" : "btn-danger"}`}
               onClick={confirmTrade}
-              disabled={checking}
+              aria-disabled={checking || cantAfford}
               autoFocus
             >
               {checking
                 ? "Checking price…"
                 : `Yes, ${pending.side === "buy" ? "buy" : "sell"} now`}
             </button>
-            <button
-              className="btn btn-ghost"
-              onClick={() => setPending(null)}
-              disabled={checking}
-            >
+            <button className="btn btn-ghost" onClick={cancelPending}>
               Cancel
             </button>
           </div>
         </div>
       )}
 
-      {msg && (
-        <div
-          role="status"
-          className={`text-sm rounded-lg px-3 py-2 ${
-            msg.kind === "ok"
-              ? "bg-emerald-50 text-emerald-800"
-              : "bg-rose-50 text-rose-800"
-          }`}
-        >
-          {msg.text}
-        </div>
-      )}
+      {/* Always rendered, so screen readers announce new messages. The
+          negative margin cancels the card's gap while it's empty. */}
+      <div role="status" className="empty:-mt-4">
+        {msg && (
+          <div
+            className={`text-sm rounded-lg px-3 py-2 ${
+              msg.kind === "ok"
+                ? "bg-emerald-50 text-emerald-800"
+                : "bg-rose-50 text-rose-800"
+            }`}
+          >
+            {msg.text}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

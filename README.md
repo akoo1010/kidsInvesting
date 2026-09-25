@@ -25,7 +25,9 @@ localStorage, and can optionally sync across devices via a small backend.
 - **Goal setting** — pick a target dollar value + optional deadline.
 - **Portfolio value chart** with **S&P 500 overlay** — daily snapshots,
   normalized to the same start so kids can see whether they're beating the
-  market.
+  market. A day is only saved once every holding's price has loaded, so a
+  failed quote never shows up as a crash; a stock Yahoo no longer knows
+  (e.g. delisted) counts as $0.
 - **Sector breakdown** pie chart — diversification at a glance, with
   praise/warning callouts.
 - **Achievements** — first trade, bull run, diversified, long-term holder,
@@ -71,7 +73,8 @@ localStorage, and can optionally sync across devices via a small backend.
 
 ## Getting started
 
-Requires Node 20.19+ (Node 25 was used for development). No external services
+Requires Node 20.19+, 22.13+, or 24+ (see `engines` in `package.json`; CI
+uses Node 22 and Node 25 was used for development). No external services
 required for local dev — sync uses a JSON file under `./data`.
 
 ```bash

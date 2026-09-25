@@ -45,6 +45,9 @@ export function buyBlockReason(quote: PricedInstrument): string | null {
     }
     return "This one is watch-only. Cubs can buy stocks and funds (ETFs).";
   }
+  if (!quote.currency) {
+    return "We can't tell what currency this one is priced in, so it's watch-only for now.";
+  }
   if (quote.currency !== TRADING.cashCurrency) {
     return `This one is priced in ${quote.currency}, but your cash is in US dollars, so it's watch-only. Many foreign companies also trade in the US — try searching for the company's name.`;
   }

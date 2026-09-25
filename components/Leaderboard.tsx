@@ -34,7 +34,7 @@ export function Leaderboard() {
     return Array.from(set).sort();
   }, [profiles, portfolios]);
 
-  const { quotesMap: quotes, loading } = useQuotes(allSymbols, ready);
+  const { quotesMap: quotes, notFound, loading } = useQuotes(allSymbols, ready);
 
   const rows: Row[] = profiles
     .map((p) => {
@@ -54,7 +54,7 @@ export function Leaderboard() {
       }
       // Holdings without a live price (still loading, or failed) count at
       // cost basis, so the ranking shows ~0% rather than wildly-wrong losses.
-      const { totalValue } = valuePortfolio(port, quotes);
+      const { totalValue } = valuePortfolio(port, quotes, notFound);
       const gain = totalValue - STARTING_CASH_AMOUNT;
       const gainPct = (gain / STARTING_CASH_AMOUNT) * 100;
       return {

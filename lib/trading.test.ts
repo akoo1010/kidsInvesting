@@ -228,6 +228,12 @@ describe("buyBlockReason", () => {
     }
   });
 
+  it("blocks an unknown currency instead of assuming dollars", () => {
+    expect(buyBlockReason({ price: 100, currency: undefined, quoteType: "EQUITY" })).toMatch(
+      /can't tell what currency/,
+    );
+  });
+
   it("blocks when there's no usable price", () => {
     expect(buyBlockReason(usd("EQUITY", 0))).toMatch(/no live price/);
   });

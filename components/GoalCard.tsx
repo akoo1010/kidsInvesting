@@ -13,7 +13,8 @@ export function GoalCard({
   onClear,
 }: {
   goal: Goal | null | undefined;
-  totalValue: number;
+  // Null until every price has loaded, so an estimate never shows progress.
+  totalValue: number | null;
   onSet: (target: number, deadlineMs: number | null) => void;
   onClear: () => void;
 }) {
@@ -120,8 +121,11 @@ export function GoalCard({
 
   if (!goal) return null;
 
-  const pct = Math.max(0, Math.min(100, (totalValue / goal.target) * 100));
-  const reached = totalValue >= goal.target;
+  const pct =
+    totalValue === null
+      ? 0
+      : Math.max(0, Math.min(100, (totalValue / goal.target) * 100));
+  const reached = totalValue !== null && totalValue >= goal.target;
   const daysLeft =
     goal.deadline != null
       ? Math.ceil((goal.deadline - Date.now()) / DAY_MS)
@@ -171,8 +175,9 @@ export function GoalCard({
       </div>
       <div className="flex justify-between text-xs text-slate-700">
         <span>
-          {formatMoney(totalValue)} of {formatMoney(goal.target)} (
-          {pct.toFixed(0)}%)
+          {totalValue === null
+            ? "Waiting for prices…"
+            : `${formatMoney(totalValue)} of ${formatMoney(goal.target)} (${pct.toFixed(0)}%)`}
         </span>
         {daysLeft !== null && !reached && (
           <span>

@@ -33,15 +33,20 @@ export function PortfolioView() {
 
   const symbols = useMemo(() => Object.keys(state.holdings), [state.holdings]);
 
-  const { quotesMap: quotes, loading } = useQuotes(symbols, ready);
+  const { quotesMap: quotes, notFound, loading } = useQuotes(symbols, ready);
 
-  const { rows, investedValue, totalValue, missing, complete } = useMemo(
-    () => valuePortfolio(state, quotes),
-    [state, quotes],
+  const { rows, investedValue, totalValue, missing, unpriced, complete } = useMemo(
+    () => valuePortfolio(state, quotes, notFound),
+    [state, quotes, notFound],
   );
   const totalGain = totalValue - STARTING_CASH_AMOUNT;
   const totalGainPct = (totalGain / STARTING_CASH_AMOUNT) * 100;
   const showQuotePlaceholders = loading && symbols.length > 0;
+  // While prices load, show placeholders rather than an estimate.
+  const totalsPending = !complete && loading;
+  // Only a complete valuation feeds the goal and the chart's "today" point,
+  // so an estimate can't claim a goal is reached.
+  const liveTotalValue = complete ? totalValue : null;
 
   // Once quotes settle, snapshot today's value and re-evaluate achievements.
   // Both actions are idempotent — they only persist diffs. The value is only
@@ -89,13 +94,23 @@ export function PortfolioView() {
 
       <section className="card p-6">
         <div className="grid sm:grid-cols-4 gap-4">
-          <Stat label="Total value" value={formatMoney(totalValue)} />
+          <Stat
+            label="Total value"
+            value={totalsPending ? "…" : formatMoney(totalValue)}
+          />
           <Stat label="Cash" value={formatMoney(state.cash)} />
-          <Stat label="Invested" value={formatMoney(investedValue)} />
+          <Stat
+            label="Invested"
+            value={totalsPending ? "…" : formatMoney(investedValue)}
+          />
           <Stat
             label="Gain / Loss"
-            value={`${formatChange(totalGain)} (${formatPercent(totalGainPct)})`}
-            valueClass={gainColor(totalGain)}
+            value={
+              totalsPending
+                ? "…"
+                : `${formatChange(totalGain)} (${formatPercent(totalGainPct)})`
+            }
+            valueClass={totalsPending ? undefined : gainColor(totalGain)}
           />
         </div>
         {!loading && missing.length > 0 && (
@@ -103,6 +118,14 @@ export function PortfolioView() {
             ⚠️ Couldn&apos;t get today&apos;s price for {missing.join(", ")}, so{" "}
             {missing.length === 1 ? "it's" : "they're"} counted at what you
             paid for now.
+          </p>
+        )}
+        {!loading && unpriced.length > 0 && (
+          <p role="note" className="mt-3 text-xs text-amber-800">
+            ⚠️ {unpriced.join(", ")} {unpriced.length === 1 ? "has" : "have"} no
+            price right now (a stock can stop trading, for example when another
+            company buys it), so {unpriced.length === 1 ? "it's" : "they're"}{" "}
+            counted as $0.
           </p>
         )}
         <div className="mt-4 flex flex-wrap gap-2">
@@ -116,12 +139,12 @@ export function PortfolioView() {
         <div className="lg:col-span-2">
           <PortfolioChart
             history={state.valueHistory ?? []}
-            currentValue={totalValue}
+            currentValue={liveTotalValue}
           />
         </div>
         <GoalCard
           goal={state.goal ?? null}
-          totalValue={totalValue}
+          totalValue={liveTotalValue}
           onSet={setGoal}
           onClear={clearGoal}
         />
@@ -180,7 +203,9 @@ export function PortfolioView() {
                       {r.quote ? formatMoney(r.quote.price) : showQuotePlaceholders ? "…" : "—"}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
-                      {r.quote ? formatMoney(r.value) : showQuotePlaceholders ? "…" : "—"}
+                      {r.status === "missing"
+                        ? showQuotePlaceholders ? "…" : "—"
+                        : formatMoney(r.value)}
                     </td>
                     <td
                       className={`px-4 py-3 text-right font-semibold tabular-nums ${gainColor(r.gain ?? 0)}`}

@@ -2,7 +2,9 @@ export type Quote = {
   symbol: string;
   name: string;
   price: number;
-  currency: string;
+  // Undefined when Yahoo didn't say. Display code falls back to USD, but
+  // trading treats an unknown currency as not-dollars.
+  currency?: string;
   change: number;
   changePercent: number;
   previousClose: number;

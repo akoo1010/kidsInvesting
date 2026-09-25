@@ -29,17 +29,18 @@ describe("valuePortfolio", () => {
     );
     expect(v.complete).toBe(true);
     expect(v.missing).toEqual([]);
+    expect(v.unpriced).toEqual([]);
     expect(v.investedValue).toBe(850);
     expect(v.totalValue).toBe(1_350);
-    expect(v.rows.map((r) => [r.symbol, r.value, r.gain])).toEqual([
-      ["AAPL", 400, 100],
-      ["KO", 450, -50],
+    expect(v.rows.map((r) => [r.symbol, r.status, r.value, r.gain])).toEqual([
+      ["AAPL", "live", 400, 100],
+      ["KO", "live", 450, -50],
     ]);
     expect(v.rows[0].gainPct).toBeCloseTo(33.333, 3);
     expect(v.rows[1].gainPct).toBeCloseTo(-10, 10);
   });
 
-  it("counts a holding with no quote at cost basis, not $0", () => {
+  it("counts a holding with no answer yet at cost basis, not $0, and is incomplete", () => {
     const v = valuePortfolio(
       { cash: 1_000, holdings: { AAPL: lot(2, 300), KO: lot(10, 500) } },
       { AAPL: quote("AAPL", 200) },
@@ -48,15 +49,37 @@ describe("valuePortfolio", () => {
     expect(v.missing).toEqual(["KO"]);
     expect(v.totalValue).toBe(1_000 + 400 + 500);
     const ko = v.rows.find((r) => r.symbol === "KO");
-    expect(ko).toMatchObject({ quote: undefined, value: 500, gain: null, gainPct: null });
+    expect(ko).toMatchObject({
+      status: "missing",
+      quote: undefined,
+      value: 500,
+      gain: null,
+      gainPct: null,
+    });
   });
 
-  it("treats a $0 or invalid price the same as a missing quote", () => {
+  it("counts a quote with no usable price as $0 without blocking completeness", () => {
     const v = valuePortfolio(
-      { cash: 0, holdings: { AAPL: lot(1, 100), MSFT: lot(1, 50) } },
-      { AAPL: quote("AAPL", 0), MSFT: quote("MSFT", Number.NaN) },
+      { cash: 0, holdings: { AAPL: lot(1, 100), MSFT: lot(1, 50), KO: lot(2, 90) } },
+      { AAPL: quote("AAPL", 0), MSFT: quote("MSFT", Number.NaN), KO: quote("KO", 50) },
     );
-    expect(v.missing).toEqual(["AAPL", "MSFT"]);
+    expect(v.unpriced).toEqual(["AAPL", "MSFT"]);
+    expect(v.missing).toEqual([]);
+    expect(v.complete).toBe(true);
+    expect(v.totalValue).toBe(100);
+  });
+
+  // Regression: one delisted stock used to freeze the value chart and the
+  // value badges forever, because it was "missing" on every load.
+  it("counts a symbol Yahoo doesn't know as $0 without blocking completeness", () => {
+    const v = valuePortfolio(
+      { cash: 100, holdings: { GONE: lot(20, 1_000), KO: lot(1, 40) } },
+      { KO: quote("KO", 50) },
+      ["GONE"],
+    );
+    expect(v.complete).toBe(true);
+    expect(v.unpriced).toEqual(["GONE"]);
+    expect(v.rows[0]).toMatchObject({ symbol: "GONE", status: "unpriced", value: 0 });
     expect(v.totalValue).toBe(150);
   });
 
@@ -67,6 +90,7 @@ describe("valuePortfolio", () => {
       investedValue: 0,
       totalValue: 10_000,
       missing: [],
+      unpriced: [],
       complete: true,
     });
   });

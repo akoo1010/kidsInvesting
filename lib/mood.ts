@@ -1,3 +1,4 @@
+import { isUsablePrice } from "@/lib/trading";
 import type { Lot, Quote } from "@/lib/types";
 
 export type Mood = {
@@ -31,7 +32,7 @@ function dailyChangePct(
   let anyMatched = false;
   for (const [sym, lot] of Object.entries(holdings)) {
     const q = quotes[sym];
-    if (!q || lot.shares <= 0) continue;
+    if (!q || !isUsablePrice(q.price) || lot.shares <= 0) continue;
     anyMatched = true;
     totalValue += q.price * lot.shares;
     totalChange += q.change * lot.shares;

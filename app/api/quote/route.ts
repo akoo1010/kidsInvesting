@@ -1,5 +1,5 @@
 import { apiHandler, parseSymbolsParam, ApiError } from "@/lib/server/apiHandler";
-import { getQuote, getQuotes } from "@/lib/stocks";
+import { findQuotes, getQuote } from "@/lib/stocks";
 
 export const revalidate = 30;
 
@@ -10,8 +10,7 @@ export const GET = apiHandler(async (req: Request) => {
 
   if (symbolsParam) {
     const symbols = parseSymbolsParam(req);
-    const quotes = await getQuotes(symbols);
-    return { quotes };
+    return await findQuotes(symbols);
   }
 
   if (!symbol) {
