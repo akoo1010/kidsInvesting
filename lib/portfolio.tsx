@@ -6,12 +6,14 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { STARTING_CASH_AMOUNT, STORAGE_KEYS } from "@/lib/constants";
 
-import type { Lot, Trade, Goal, ValueSnapshot, PortfolioState, CubProfile, ActionResult } from "@/lib/types";
+import type { PortfolioState, CubProfile, ActionResult } from "@/lib/types";
 import { validatePortfoliosShape } from "@/lib/snapshot";
+import { applyBuy, applySell, type TradeOrder } from "@/lib/trading";
 
 type Store = {
   profiles: CubProfile[];
@@ -86,10 +88,6 @@ function todayUtcDateString(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function isObject(val: unknown): val is Record<string, unknown> {
-  return val !== null && typeof val === "object";
-}
-
 function isValidStore(raw: unknown): raw is Store {
   return validatePortfoliosShape(raw).ok;
 }
@@ -161,10 +159,23 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const [store, setStore] = useState<Store>(EMPTY_STORE);
   const [ready, setReady] = useState(false);
 
-  useEffect(() => {
-    setStore(loadStore());
-    setReady(true);
+  // The latest store, updated synchronously on every change. All updates go
+  // through `commit`, which applies the updater right away (instead of
+  // whenever React gets to it), so actions like `buy` can report whether
+  // they actually succeeded.
+  const storeRef = useRef<Store>(EMPTY_STORE);
+  const commit = useCallback((updater: (prev: Store) => Store) => {
+    const prev = storeRef.current;
+    const next = updater(prev);
+    if (next === prev) return;
+    storeRef.current = next;
+    setStore(next);
   }, []);
+
+  useEffect(() => {
+    commit(() => loadStore());
+    setReady(true);
+  }, [commit]);
 
   useEffect(() => {
     if (!ready) return;
@@ -183,28 +194,30 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
 
   const updateCurrent = useCallback(
     (updater: (prev: PortfolioState) => PortfolioState) => {
-      setStore((prev) => {
+      commit((prev) => {
         if (!prev.currentProfileId) return prev;
         const existing = prev.portfolios[prev.currentProfileId] ?? freshPortfolio();
+        const updated = updater(existing);
+        if (updated === existing) return prev;
         return {
           ...prev,
           portfolios: {
             ...prev.portfolios,
-            [prev.currentProfileId]: updater(existing),
+            [prev.currentProfileId]: updated,
           },
         };
       });
     },
-    [],
+    [commit],
   );
 
   const switchProfile = useCallback<Ctx["switchProfile"]>((id) => {
-    setStore((prev) =>
+    commit((prev) =>
       prev.profiles.some((p) => p.id === id)
         ? { ...prev, currentProfileId: id }
         : prev,
     );
-  }, []);
+  }, [commit]);
 
   const createProfile = useCallback<Ctx["createProfile"]>((name, emoji) => {
     const trimmed = name.trim().slice(0, 20);
@@ -215,16 +228,16 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
       emoji: emoji || "🐻",
       createdAt: Date.now(),
     };
-    setStore((prev) => ({
+    commit((prev) => ({
       profiles: [...prev.profiles, profile],
       currentProfileId: profile.id,
       portfolios: { ...prev.portfolios, [profile.id]: freshPortfolio() },
     }));
     return profile;
-  }, []);
+  }, [commit]);
 
   const deleteProfile = useCallback<Ctx["deleteProfile"]>((id) => {
-    setStore((prev) => {
+    commit((prev) => {
       const profiles = prev.profiles.filter((p) => p.id !== id);
       const portfolios = { ...prev.portfolios };
       delete portfolios[id];
@@ -234,118 +247,68 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
           : prev.currentProfileId;
       return { profiles, currentProfileId, portfolios };
     });
-  }, []);
+  }, [commit]);
 
   const renameProfile = useCallback<Ctx["renameProfile"]>(
     (id, name, emoji) => {
       const trimmed = name.trim().slice(0, 20);
       if (!trimmed) return;
-      setStore((prev) => ({
+      commit((prev) => ({
         ...prev,
         profiles: prev.profiles.map((p) =>
           p.id === id ? { ...p, name: trimmed, emoji: emoji || p.emoji } : p,
         ),
       }));
     },
-    [],
+    [commit],
   );
 
   const signOut = useCallback<Ctx["signOut"]>(() => {
-    setStore((prev) => ({ ...prev, currentProfileId: null }));
-  }, []);
+    commit((prev) => ({ ...prev, currentProfileId: null }));
+  }, [commit]);
 
-  const buy = useCallback<Ctx["buy"]>((symbol, shares, price, note) => {
-    symbol = symbol.toUpperCase();
-    if (!Number.isFinite(shares) || shares <= 0) {
-      return { ok: false, reason: "Pick a number of shares greater than 0." };
-    }
-    const cost = shares * price;
-    let result: ActionResult = { ok: true };
-    updateCurrent((prev) => {
-      if (cost > prev.cash + 1e-6) {
-        result = {
-          ok: false,
-          reason: `Not enough cash. You need ${cost.toFixed(2)} but have ${prev.cash.toFixed(2)}.`,
-        };
-        return prev;
-      }
-      const existing = prev.holdings[symbol];
-      const now = Date.now();
-      const trade: Trade = {
-        id: crypto.randomUUID(),
+  // Runs a pure trade rule against the current Cub's portfolio. `commit`
+  // applies the updater synchronously, so `result` is final on return.
+  const trade = useCallback(
+    (
+      rule: typeof applyBuy,
+      symbol: string,
+      shares: number,
+      price: number,
+      note?: string,
+    ): ActionResult => {
+      let result: ActionResult = { ok: false, reason: "Pick a Cub first." };
+      const order: TradeOrder = {
         symbol,
-        side: "buy",
         shares,
         price,
-        timestamp: now,
-        ...(note?.trim() ? { note: note.trim().slice(0, 140) } : {}),
-      };
-      const nextLot: Lot = existing && existing.shares > 1e-9
-        ? {
-            shares: existing.shares + shares,
-            costBasis: existing.costBasis + cost,
-            firstAcquiredAt: existing.firstAcquiredAt ?? now,
-          }
-        : { shares, costBasis: cost, firstAcquiredAt: now };
-      return {
-        ...prev,
-        cash: prev.cash - cost,
-        holdings: { ...prev.holdings, [symbol]: nextLot },
-        trades: [trade, ...prev.trades].slice(0, 100),
-      };
-    });
-    return result;
-  }, [updateCurrent]);
-
-  const sell = useCallback<Ctx["sell"]>((symbol, shares, price, note) => {
-    symbol = symbol.toUpperCase();
-    if (!Number.isFinite(shares) || shares <= 0) {
-      return { ok: false, reason: "Pick a number of shares greater than 0." };
-    }
-    let result: ActionResult = { ok: true };
-    updateCurrent((prev) => {
-      const existing = prev.holdings[symbol];
-      if (!existing || existing.shares < shares - 1e-9) {
-        result = {
-          ok: false,
-          reason: `You only own ${existing?.shares ?? 0} shares of ${symbol}.`,
-        };
-        return prev;
-      }
-      const proceeds = shares * price;
-      const remainingShares = existing.shares - shares;
-      const remainingBasis =
-        existing.shares === 0
-          ? 0
-          : existing.costBasis * (remainingShares / existing.shares);
-      const nextHoldings = { ...prev.holdings };
-      if (remainingShares < 1e-9) {
-        delete nextHoldings[symbol];
-      } else {
-        nextHoldings[symbol] = {
-          shares: remainingShares,
-          costBasis: remainingBasis,
-          firstAcquiredAt: existing.firstAcquiredAt,
-        };
-      }
-      const trade: Trade = {
+        note,
         id: crypto.randomUUID(),
-        symbol,
-        side: "sell",
-        shares,
-        price,
         timestamp: Date.now(),
-        ...(note?.trim() ? { note: note.trim().slice(0, 140) } : {}),
       };
-      return {
-        ...prev,
-        cash: prev.cash + proceeds,
-        holdings: nextHoldings,
-        trades: [trade, ...prev.trades].slice(0, 100),
-      };
-    });
-    return result;
-  }, [updateCurrent]);
+      updateCurrent((prev) => {
+        const outcome = rule(prev, order);
+        if (!outcome.ok) {
+          result = { ok: false, reason: outcome.reason };
+          return prev;
+        }
+        result = { ok: true };
+        return outcome.state;
+      });
+      return result;
+    },
+    [updateCurrent],
+  );
+
+  const buy = useCallback<Ctx["buy"]>(
+    (symbol, shares, price, note) => trade(applyBuy, symbol, shares, price, note),
+    [trade],
+  );
+
+  const sell = useCallback<Ctx["sell"]>(
+    (symbol, shares, price, note) => trade(applySell, symbol, shares, price, note),
+    [trade],
+  );
 
   const setGoal = useCallback<Ctx["setGoal"]>((target, deadlineMs) => {
     if (!Number.isFinite(target) || target <= 0) return;
@@ -434,15 +397,15 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   );
 
   const replaceStore = useCallback<Ctx["replaceStore"]>((next) => {
-    setStore({
+    commit(() => ({
       profiles: next.profiles,
       currentProfileId: next.currentProfileId,
       portfolios: next.portfolios,
-    });
-  }, []);
+    }));
+  }, [commit]);
 
   const resetProfile = useCallback<Ctx["resetProfile"]>((id) => {
-    setStore((prev) =>
+    commit((prev) =>
       prev.profiles.some((p) => p.id === id)
         ? {
             ...prev,
@@ -450,7 +413,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
           }
         : prev,
     );
-  }, []);
+  }, [commit]);
 
   const value = useMemo<Ctx>(
     () => ({

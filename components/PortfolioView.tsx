@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { usePortfolio } from "@/lib/portfolio";
 import { STARTING_CASH_AMOUNT } from "@/lib/constants";
 import { evaluateAchievements } from "@/lib/achievements";
@@ -18,6 +18,7 @@ import { AchievementGrid } from "@/components/AchievementGrid";
 import { SectorBreakdown } from "@/components/SectorBreakdown";
 import { MoodBadge } from "@/components/MoodBadge";
 import { moodForHoldings } from "@/lib/mood";
+import { valuePortfolio } from "@/lib/valuation";
 
 export function PortfolioView() {
   const {
@@ -32,38 +33,39 @@ export function PortfolioView() {
 
   const symbols = useMemo(() => Object.keys(state.holdings), [state.holdings]);
 
-  const { quotesMap: quotes, loading } = useQuotes(symbols, ready);
+  const { quotesMap: quotes, notFound, loading } = useQuotes(symbols, ready);
 
-  const rows = symbols.map((sym) => {
-    const lot = state.holdings[sym];
-    const q = quotes[sym];
-    const price = q?.price ?? 0;
-    const value = lot.shares * price;
-    const gain = value - lot.costBasis;
-    const gainPct = lot.costBasis > 0 ? (gain / lot.costBasis) * 100 : 0;
-    return { sym, lot, q, price, value, gain, gainPct };
-  });
-
-  const investedValue = rows.reduce((acc, r) => acc + r.value, 0);
-  const totalValue = state.cash + investedValue;
+  const { rows, investedValue, totalValue, missing, unpriced, complete } = useMemo(
+    () => valuePortfolio(state, quotes, notFound),
+    [state, quotes, notFound],
+  );
   const totalGain = totalValue - STARTING_CASH_AMOUNT;
   const totalGainPct = (totalGain / STARTING_CASH_AMOUNT) * 100;
   const showQuotePlaceholders = loading && symbols.length > 0;
+  // While prices load, show placeholders rather than an estimate.
+  const totalsPending = !complete && loading;
+  // Only a complete valuation feeds the goal and the chart's "today" point,
+  // so an estimate can't claim a goal is reached.
+  const liveTotalValue = complete ? totalValue : null;
 
-  // Once we know the current value, snapshot it for today and re-evaluate
-  // achievements. Both actions are idempotent — they only persist diffs.
-  const quotesReady = symbols.length === 0 || !loading;
+  // Once quotes settle, snapshot today's value and re-evaluate achievements.
+  // Both actions are idempotent — they only persist diffs. The value is only
+  // trusted when every holding has a live price; otherwise a failed quote
+  // would be saved into the chart as a fake crash.
+  const quotesSettled = symbols.length === 0 || !loading;
   useEffect(() => {
-    if (!ready || !currentProfile || !quotesReady) return;
-    recordTodayValue(totalValue);
-    const earned = evaluateAchievements(state, totalValue);
+    if (!ready || !currentProfile || !quotesSettled) return;
+    const liveTotal = complete ? totalValue : null;
+    if (liveTotal !== null) recordTodayValue(liveTotal);
+    const earned = evaluateAchievements(state, liveTotal);
     const existing = state.achievements ?? {};
     const newOnes = earned.filter((id) => !(id in existing));
     if (newOnes.length > 0) awardAchievements(newOnes);
   }, [
     ready,
     currentProfile,
-    quotesReady,
+    quotesSettled,
+    complete,
     totalValue,
     state,
     recordTodayValue,
@@ -92,15 +94,40 @@ export function PortfolioView() {
 
       <section className="card p-6">
         <div className="grid sm:grid-cols-4 gap-4">
-          <Stat label="Total value" value={formatMoney(totalValue)} />
+          <Stat
+            label="Total value"
+            value={totalsPending ? "…" : formatMoney(totalValue)}
+          />
           <Stat label="Cash" value={formatMoney(state.cash)} />
-          <Stat label="Invested" value={formatMoney(investedValue)} />
+          <Stat
+            label="Invested"
+            value={totalsPending ? "…" : formatMoney(investedValue)}
+          />
           <Stat
             label="Gain / Loss"
-            value={`${formatChange(totalGain)} (${formatPercent(totalGainPct)})`}
-            valueClass={gainColor(totalGain)}
+            value={
+              totalsPending
+                ? "…"
+                : `${formatChange(totalGain)} (${formatPercent(totalGainPct)})`
+            }
+            valueClass={totalsPending ? undefined : gainColor(totalGain)}
           />
         </div>
+        {!loading && missing.length > 0 && (
+          <p role="note" className="mt-3 text-xs text-amber-800">
+            ⚠️ Couldn&apos;t get today&apos;s price for {missing.join(", ")}, so{" "}
+            {missing.length === 1 ? "it's" : "they're"} counted at what you
+            paid for now.
+          </p>
+        )}
+        {!loading && unpriced.length > 0 && (
+          <p role="note" className="mt-3 text-xs text-amber-800">
+            ⚠️ {unpriced.join(", ")} {unpriced.length === 1 ? "has" : "have"} no
+            price right now (a stock can stop trading, for example when another
+            company buys it), so {unpriced.length === 1 ? "it's" : "they're"}{" "}
+            counted as $0.
+          </p>
+        )}
         <div className="mt-4 flex flex-wrap gap-2">
           <Link href="/explore" className="btn btn-primary">
             🔎 Find a stock
@@ -112,12 +139,13 @@ export function PortfolioView() {
         <div className="lg:col-span-2">
           <PortfolioChart
             history={state.valueHistory ?? []}
-            currentValue={totalValue}
+            currentValue={liveTotalValue}
           />
         </div>
         <GoalCard
           goal={state.goal ?? null}
-          totalValue={totalValue}
+          totalValue={liveTotalValue}
+          pricesLoading={loading}
           onSet={setGoal}
           onClear={clearGoal}
         />
@@ -154,16 +182,16 @@ export function PortfolioView() {
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr key={r.sym} className="border-t border-slate-100">
+                  <tr key={r.symbol} className="border-t border-slate-100">
                     <td className="px-4 py-3">
                       <Link
-                        href={`/stock/${encodeURIComponent(r.sym)}`}
+                        href={`/stock/${encodeURIComponent(r.symbol)}`}
                         className="font-semibold text-indigo-700 hover:underline"
                       >
-                        {r.sym}
+                        {r.symbol}
                       </Link>
                       <div className="text-xs text-slate-600">
-                        {r.q?.name ?? ""}
+                        {r.quote?.name ?? ""}
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right">{r.lot.shares}</td>
@@ -173,17 +201,19 @@ export function PortfolioView() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
-                      {r.q ? formatMoney(r.price) : showQuotePlaceholders ? "…" : "—"}
+                      {r.quote ? formatMoney(r.quote.price) : showQuotePlaceholders ? "…" : "—"}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums">
-                      {r.q ? formatMoney(r.value) : showQuotePlaceholders ? "…" : "—"}
+                      {r.status === "missing"
+                        ? showQuotePlaceholders ? "…" : "—"
+                        : formatMoney(r.value)}
                     </td>
                     <td
-                      className={`px-4 py-3 text-right font-semibold tabular-nums ${gainColor(r.gain)}`}
+                      className={`px-4 py-3 text-right font-semibold tabular-nums ${gainColor(r.gain ?? 0)}`}
                     >
-                      {r.q ? formatChange(r.gain) : "—"}
+                      {r.gain !== null ? formatChange(r.gain) : "—"}
                       <div className="text-xs font-normal">
-                        {r.q ? formatPercent(r.gainPct) : ""}
+                        {r.gainPct !== null ? formatPercent(r.gainPct) : ""}
                       </div>
                     </td>
                   </tr>

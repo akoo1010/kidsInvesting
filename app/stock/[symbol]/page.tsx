@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getQuote } from "@/lib/stocks";
+import { getQuote, QuoteNotFoundError } from "@/lib/stocks";
 import { PriceChart } from "@/components/PriceChart";
 import { TradePanel } from "@/components/TradePanel";
 import { Fundamentals } from "@/components/Fundamentals";
@@ -21,10 +21,11 @@ export default async function StockPage({
     quote = await getQuote(sym);
   } catch (err) {
     const isNotFound =
-      err instanceof Error &&
-      (err.message.toLowerCase().includes("not found") ||
-        err.message.includes("404") ||
-        err.message.toLowerCase().includes("does not exist"));
+      err instanceof QuoteNotFoundError ||
+      (err instanceof Error &&
+        (err.message.toLowerCase().includes("not found") ||
+          err.message.includes("404") ||
+          err.message.toLowerCase().includes("does not exist")));
     if (isNotFound) {
       notFound();
     }
@@ -64,11 +65,7 @@ export default async function StockPage({
         <div className="lg:col-span-2">
           <PriceChart symbol={quote.symbol} currency={quote.currency} />
         </div>
-        <TradePanel
-          symbol={quote.symbol}
-          price={quote.price}
-          currency={quote.currency}
-        />
+        <TradePanel key={quote.symbol} quote={quote} />
       </div>
 
       <Fundamentals quote={quote} />

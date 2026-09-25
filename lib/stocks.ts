@@ -7,24 +7,39 @@ const yf = new YahooFinance({
 
 import type { Quote, HistoryPoint, SearchHit, StockProfile, StockHistoryRange } from "@/lib/types";
 
+// Yahoo doesn't know the symbol (never existed, or delisted: yahoo-finance2
+// drops `quoteType: "NONE"` results and returns nothing).
+export class QuoteNotFoundError extends Error {
+  constructor(public symbol: string) {
+    super(`Quote not found for ${symbol}.`);
+    this.name = "QuoteNotFoundError";
+  }
+}
+
 export async function getQuote(symbol: string): Promise<Quote> {
   const q = await yf.quote(symbol);
+  if (!q) throw new QuoteNotFoundError(symbol.toUpperCase());
+  // 0 means "no price" — callers check isUsablePrice before trusting it.
   const price =
     q.regularMarketPrice ?? q.postMarketPrice ?? q.preMarketPrice ?? 0;
+  const hasPrice = price > 0;
   const previousClose = q.regularMarketPreviousClose ?? price;
-  const change = q.regularMarketChange ?? price - previousClose;
-  const changePercent =
-    q.regularMarketChangePercent ??
-    (previousClose ? (change / previousClose) * 100 : 0);
+  // Without a price there's no change to report (not a -100% crash).
+  const change = hasPrice ? (q.regularMarketChange ?? price - previousClose) : 0;
+  const changePercent = hasPrice
+    ? (q.regularMarketChangePercent ??
+      (previousClose ? (change / previousClose) * 100 : 0))
+    : 0;
   return {
     symbol: q.symbol ?? symbol.toUpperCase(),
     name: q.shortName ?? q.longName ?? q.symbol ?? symbol.toUpperCase(),
     price,
-    currency: q.currency ?? "USD",
+    currency: q.currency,
     change,
     changePercent,
     previousClose,
     marketState: q.marketState,
+    quoteType: q.quoteType,
     exchange: q.fullExchangeName,
     marketCap: q.marketCap,
     trailingPE: q.trailingPE,
@@ -35,12 +50,27 @@ export async function getQuote(symbol: string): Promise<Quote> {
   };
 }
 
+// Quotes for every symbol that loaded, plus the symbols Yahoo definitely
+// doesn't know. Symbols that failed for other reasons (network, throttling)
+// are in neither list — callers should treat them as "unknown for now".
+export async function findQuotes(
+  symbols: string[],
+): Promise<{ quotes: Quote[]; notFound: string[] }> {
+  const results = await Promise.allSettled(symbols.map((s) => getQuote(s)));
+  const quotes: Quote[] = [];
+  const notFound: string[] = [];
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled") quotes.push(r.value);
+    else if (r.reason instanceof QuoteNotFoundError) {
+      notFound.push(symbols[i].toUpperCase());
+    }
+  });
+  return { quotes, notFound };
+}
+
 export async function getQuotes(symbols: string[]): Promise<Quote[]> {
   if (symbols.length === 0) return [];
-  const results = await Promise.allSettled(symbols.map((s) => getQuote(s)));
-  return results
-    .filter((r): r is PromiseFulfilledResult<Quote> => r.status === "fulfilled")
-    .map((r) => r.value);
+  return (await findQuotes(symbols)).quotes;
 }
 
 export async function getHistory(

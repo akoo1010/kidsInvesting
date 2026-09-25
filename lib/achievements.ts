@@ -49,14 +49,18 @@ export const ACHIEVEMENTS: Achievement[] = [
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// `totalValue` is null when some prices didn't load. The value-based badges
+// are skipped then, so an estimated total can never award one.
 export function evaluateAchievements(
   state: PortfolioState,
-  totalValue: number,
+  totalValue: number | null,
 ): string[] {
   const earned: string[] = [];
 
   if (state.trades.length >= 1) earned.push("first-trade");
-  if (totalValue > STARTING_CASH_AMOUNT) earned.push("bull-run");
+  if (totalValue !== null && totalValue > STARTING_CASH_AMOUNT) {
+    earned.push("bull-run");
+  }
 
   const heldLots = Object.entries(state.holdings).filter(
     ([, lot]) => lot.shares > 0,
@@ -80,6 +84,7 @@ export function evaluateAchievements(
   // Goal must exceed the free starting cash so a kid can't "earn" the badge
   // by setting an artificially-low target.
   if (
+    totalValue !== null &&
     state.goal &&
     state.goal.target > STARTING_CASH_AMOUNT &&
     totalValue >= state.goal.target

@@ -1,3 +1,4 @@
+import { isUsablePrice } from "@/lib/trading";
 import type { Lot, Quote } from "@/lib/types";
 
 export type Mood = {
@@ -20,8 +21,9 @@ function moodForChange(pct: number | null): Mood {
   return { emoji: "🌧️", label: "Stormy day", pct, tone: "bad" };
 }
 
-// Weighted % daily change across a portfolio's holdings. Cash isn't
-// "moving" so it's excluded. Returns null when there's nothing to score.
+// % daily change across a portfolio's holdings, measured against their value
+// at yesterday's close (like a stock's own daily %). Cash isn't "moving" so
+// it's excluded. Returns null when there's nothing to score.
 function dailyChangePct(
   holdings: Record<string, Lot>,
   quotes: Record<string, Quote>,
@@ -31,13 +33,14 @@ function dailyChangePct(
   let anyMatched = false;
   for (const [sym, lot] of Object.entries(holdings)) {
     const q = quotes[sym];
-    if (!q || lot.shares <= 0) continue;
+    if (!q || !isUsablePrice(q.price) || lot.shares <= 0) continue;
     anyMatched = true;
     totalValue += q.price * lot.shares;
     totalChange += q.change * lot.shares;
   }
-  if (!anyMatched || totalValue < 1e-6) return null;
-  return (totalChange / totalValue) * 100;
+  const previousValue = totalValue - totalChange;
+  if (!anyMatched || previousValue < 1e-6) return null;
+  return (totalChange / previousValue) * 100;
 }
 
 export function moodForHoldings(

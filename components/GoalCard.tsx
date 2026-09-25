@@ -9,11 +9,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export function GoalCard({
   goal,
   totalValue,
+  pricesLoading = false,
   onSet,
   onClear,
 }: {
   goal: Goal | null | undefined;
-  totalValue: number;
+  // Null until every price has loaded, so an estimate never shows progress.
+  totalValue: number | null;
+  // Tells "still loading" apart from "some prices failed" when totalValue is null.
+  pricesLoading?: boolean;
   onSet: (target: number, deadlineMs: number | null) => void;
   onClear: () => void;
 }) {
@@ -120,8 +124,11 @@ export function GoalCard({
 
   if (!goal) return null;
 
-  const pct = Math.max(0, Math.min(100, (totalValue / goal.target) * 100));
-  const reached = totalValue >= goal.target;
+  const pct =
+    totalValue === null
+      ? 0
+      : Math.max(0, Math.min(100, (totalValue / goal.target) * 100));
+  const reached = totalValue !== null && totalValue >= goal.target;
   const daysLeft =
     goal.deadline != null
       ? Math.ceil((goal.deadline - Date.now()) / DAY_MS)
@@ -161,7 +168,8 @@ export function GoalCard({
         role="progressbar"
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(pct)}
+        aria-valuenow={totalValue === null ? undefined : Math.round(pct)}
+        aria-valuetext={totalValue === null ? "Unknown" : undefined}
         aria-label="Goal progress"
       >
         <div
@@ -171,10 +179,13 @@ export function GoalCard({
       </div>
       <div className="flex justify-between text-xs text-slate-700">
         <span>
-          {formatMoney(totalValue)} of {formatMoney(goal.target)} (
-          {pct.toFixed(0)}%)
+          {totalValue !== null
+            ? `${formatMoney(totalValue)} of ${formatMoney(goal.target)} (${pct.toFixed(0)}%)`
+            : pricesLoading
+              ? "Waiting for prices…"
+              : "Some prices didn't load, so your progress will show once they do."}
         </span>
-        {daysLeft !== null && !reached && (
+        {daysLeft !== null && !reached && totalValue !== null && (
           <span>
             {daysLeft > 0
               ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left`

@@ -5,6 +5,24 @@
 
 export const STARTING_CASH_AMOUNT = 10_000;
 
+// ---- Trading rules --------------------------------------------------------
+
+export const TRADING = {
+  // Cash is kept in US dollars, so only instruments priced in dollars can be
+  // bought — otherwise a ¥3,000 share would cost $3,000.
+  cashCurrency: "USD",
+  // Stocks and ETFs only. Everything else (crypto, indexes, futures, mutual
+  // funds, …) can still be viewed and watchlisted.
+  buyableQuoteTypes: ["EQUITY", "ETF"],
+  // Right before a trade fills it is re-priced. If the price moved more than
+  // this since the kid saw the confirmation, they confirm again at the new
+  // price instead of it filling silently.
+  reconfirmMovePct: 1,
+  // Give up on that price check (and don't trade) after this long.
+  priceCheckTimeoutMs: 10_000,
+  maxTradesKept: 100,
+} as const;
+
 // ---- localStorage keys (client) ------------------------------------------
 // Bumping a version means "shape changed, ignore old data" — see migration
 // notes in each provider.

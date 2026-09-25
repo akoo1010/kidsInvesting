@@ -4,7 +4,6 @@ import { useRef, useState } from "react";
 import { usePortfolio } from "@/lib/portfolio";
 import { useParentLock } from "@/lib/parentLock";
 import {
-  type SyncedSnapshot,
   validateSnapshot,
   normalizeBackup,
   type BackupV1,
