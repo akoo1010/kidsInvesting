@@ -269,10 +269,17 @@ export function TradePanel({ quote }: { quote: Quote }) {
           {pending.movedFrom !== undefined && (
             <div role="alert" className="text-sm font-semibold text-amber-900">
               ⚠️ The price just changed from {formatMoney(pending.movedFrom)} to{" "}
-              {formatMoney(pending.price)}.{" "}
-              {cantAfford
-                ? `Now ${pending.shares} share${pending.shares === 1 ? "" : "s"} would cost more than your ${formatMoney(state.cash)} cash. Cancel and pick fewer shares.`
-                : "Here's the new total — confirm again if you still want it."}
+              {formatMoney(pending.price)}.
+              {!cantAfford && " Here's the new total — confirm again if you still want it."}
+            </div>
+          )}
+          {/* A price rise, or cash spent elsewhere (e.g. synced from another
+              device), can leave the confirmed buy unaffordable. */}
+          {cantAfford && (
+            <div role="alert" className="text-sm font-semibold text-rose-800">
+              {pending.shares} share{pending.shares === 1 ? "" : "s"} would cost
+              more than your {formatMoney(state.cash)} cash. Cancel and pick
+              fewer shares.
             </div>
           )}
           <div className="font-semibold text-amber-900">

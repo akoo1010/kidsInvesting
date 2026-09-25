@@ -4,7 +4,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TradePanel } from "@/components/TradePanel";
 import { STORAGE_KEYS, TRADING } from "@/lib/constants";
-import { PortfolioProvider } from "@/lib/portfolio";
+import { PortfolioProvider, usePortfolio } from "@/lib/portfolio";
 import type { PortfolioState, Quote } from "@/lib/types";
 
 function quote(overrides: Partial<Quote> = {}): Quote {
@@ -82,6 +82,13 @@ function LeavablePanel({ q }: { q: Quote }) {
       <button onClick={() => setHere(false)}>Leave page</button>
     </PortfolioProvider>
   );
+}
+
+// Spends most of the Cub's cash from outside the panel, like a sync pull
+// bringing in trades made on another device.
+function SpendElsewhere() {
+  const { buy } = usePortfolio();
+  return <button onClick={() => buy("KO", 95, 100)}>Spend elsewhere</button>;
 }
 
 function renderPanel(q: Quote) {
@@ -207,6 +214,8 @@ describe("TradePanel: while the price is being checked", () => {
     fireEvent.click(confirm);
 
     const checking = screen.getByRole("button", { name: "Checking price…" });
+    // Not natively disabled — browsers move focus off disabled buttons.
+    expect(checking.hasAttribute("disabled")).toBe(false);
     expect(checking.getAttribute("aria-disabled")).toBe("true");
     expect(document.activeElement).toBe(checking);
     fireEvent.click(checking);
@@ -285,6 +294,32 @@ describe("TradePanel: while the price is being checked", () => {
     fireEvent.click(confirm);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(savedCub().cash).toBe(1_000);
+  });
+});
+
+describe("TradePanel: cash changing under an open confirmation", () => {
+  it("explains why a buy can't be confirmed after cash is spent elsewhere", async () => {
+    seedCub();
+    const fetchMock = mockFreshQuotes();
+    render(
+      <PortfolioProvider>
+        <TradePanel quote={quote()} />
+        <SpendElsewhere />
+      </PortfolioProvider>,
+    );
+
+    setShares(10);
+    click("Buy");
+    click("Spend elsewhere");
+
+    expect(
+      screen.getByText(/10 shares would cost more than your \$500\.00 cash/),
+    ).toBeTruthy();
+    const confirm = screen.getByRole("button", { name: "Yes, buy now" });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(confirm);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expectSaved((cub) => expect(cub.holdings).not.toHaveProperty("AAPL"));
   });
 });
 

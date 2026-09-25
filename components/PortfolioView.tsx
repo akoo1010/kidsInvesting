@@ -145,6 +145,7 @@ export function PortfolioView() {
         <GoalCard
           goal={state.goal ?? null}
           totalValue={liveTotalValue}
+          pricesLoading={loading}
           onSet={setGoal}
           onClear={clearGoal}
         />

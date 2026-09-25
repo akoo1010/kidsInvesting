@@ -21,9 +21,11 @@ function quote(symbol: string, price: number): Quote {
   };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 // $8,500 cash + AAPL and KO bought for $1,500 total: worth exactly the
 // $10,000 starting cash at cost.
-function seedCub() {
+function seedCub(overrides: Partial<PortfolioState> = {}) {
   const portfolio: PortfolioState = {
     cash: 8_500,
     holdings: {
@@ -34,6 +36,7 @@ function seedCub() {
     trades: [],
     valueHistory: [],
     achievements: {},
+    ...overrides,
   };
   localStorage.setItem(
     STORAGE_KEYS.profiles,
@@ -51,11 +54,13 @@ function savedCub(): PortfolioState {
 
 // Answers the page's API calls: /api/quote gets `quotes`, everything else
 // (sector profiles, S&P history) gets an empty result.
-function mockApi(quotes: { quotes: Quote[]; notFound?: string[] } | Error) {
+// "pending" leaves the quote request in flight.
+function mockApi(quotes: { quotes: Quote[]; notFound?: string[] } | Error | "pending") {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
       if (url.startsWith("/api/quote")) {
+        if (quotes === "pending") return new Promise(() => {});
         if (quotes instanceof Error) throw quotes;
         return { ok: true, status: 200, json: async () => quotes };
       }
@@ -138,5 +143,42 @@ describe("PortfolioView: saving today's value", () => {
     await waitFor(() => {
       expect(savedCub().valueHistory).toEqual([{ date: TODAY, value: 10_500 }]);
     });
+  });
+});
+
+describe("PortfolioView: goal progress", () => {
+  const goal = { target: 10_200, deadline: Date.now() - 3 * DAY_MS, setAt: 0 };
+
+  it("waits while prices load", async () => {
+    seedCub({ goal });
+    mockApi("pending");
+    renderPage();
+
+    expect(await screen.findByText("Waiting for prices…")).toBeTruthy();
+    expect(screen.queryByText("Goal reached! 🏆")).toBeNull();
+  });
+
+  // Regression: after a failed load the card kept saying it was waiting,
+  // and told screen readers the goal was at 0%.
+  it("says prices didn't load, without a 0% bar or a missed-deadline label", async () => {
+    seedCub({ goal });
+    mockApi(new Error("offline"));
+    renderPage();
+
+    expect(await screen.findByText(/Some prices didn't load/)).toBeTruthy();
+    const bar = screen.getByRole("progressbar", { name: "Goal progress" });
+    expect(bar.getAttribute("aria-valuenow")).toBeNull();
+    expect(bar.getAttribute("aria-valuetext")).toBe("Unknown");
+    expect(screen.queryByText(/days past/)).toBeNull();
+    expect(screen.queryByText("Goal reached! 🏆")).toBeNull();
+  });
+
+  it("shows real progress once every price loads", async () => {
+    seedCub({ goal });
+    mockApi({ quotes: [quote("AAPL", 150), quote("KO", 60)] });
+    renderPage();
+
+    expect(await screen.findByText("Goal reached! 🏆")).toBeTruthy();
+    expect(screen.getByText("$10,600.00 of $10,200.00 (100%)")).toBeTruthy();
   });
 });
